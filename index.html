@@ -43,7 +43,7 @@
         <h2>Morning!</h2>
         <ul>
           <li>I work on the Web Express team.</li>
-          <li>We run a SaaS that currently has ~1000 instances of Drupal (a CMS written in PHP).</li>
+          <li>We run a SaaS that currently has ~1400 instances of Drupal (a CMS written in PHP).</li>
         </ul>
         <aside class="notes">
 
@@ -76,8 +76,6 @@
             <li class="fragment">Apache for python application</li>
             <li class="fragment">MongoDB for python application</li>
             <li class="fragment">Varnish access</li>
-            <li class="fragment">Error logging from 3rd party hosting</li>
-            <li class="fragment">Logs from CI server</li>
           </ul>
           <aside class="notes">
             Apache logs are times 2 because of SSL. This is 100% sustainable logging. I guarantee we can make more, as
@@ -92,6 +90,7 @@
             <li>Databse logs from 3 servers</li>
             <li class="fragment">The cluster has ~16 servers</li>
             <li class="fragment">That is just in our Production cluster, we also have DEV and TEST enviroments</li>
+            <li class="fragment">As well as logging from 3rd party hosting and the CI service</li>
           </ul>
           <aside class="notes">
           </aside>
@@ -132,7 +131,7 @@
         <section>
           <h2>Gather</h2>
           <ul>
-            <li>Beats</li>
+            <li>Filebeat</li>
             <li>Syslog and friends (<a
                 href="http://www.rsyslog.com/output-to-elasticsearch-in-logstash-format-kibana-friendly/">rsyslog</a>,
               syslog-ng, etc.)</li>
@@ -195,60 +194,9 @@
       <!-- End vertical 2 -->
       <!-- Start vertical 3 -->
       <section>
-        <section>
-          <h2>Input</h2>
-          <pre><code style="max-height:525px;">
-input {
-  beats {
-    port => 5044
-    ssl_certificate => "/usr/local/openssl/certs/crt/beat-selfsigned.crt"
-    ssl_key => "/usr/local/openssl/certs/key/beat.key"
-  }
-  file {
-    type => "mysql-slow"
-    path => "/var/log/mysql/mysql-slow.log"
-    codec => multiline {
-      pattern => "^# User@Host:"
-      negate => true
-      what => previous
-    }
-  }
-}
-          </code></pre>
-          <aside class="notes">
-            MySQl slow query log is a little funky, so a common parse pattern is to look from the beginning of the
-            second record back in order to get a complete first record.
-          </aside>
-        </section>
 
         <section>
-          <h2>Filter - Varnish</h2>
-          <pre><code>
-filter {
-  if [type] == "varnishncsa" {
-    grok {
-      match => { "message" => '%{IPORHOST:clientip} %{USER:ident} %{USER:auth} \[%{HTTPDATE:varnish_timestamp}\] \"%{WORD:verb} %{NOTSPACE:request} HTTP/%{NUMBER:httpversion}\" %{NUMBER:response} %{NOTSPACE:bytes} %{QS:referrer} %{QS:agent} %{QS:varnish_response} %{QS:varnish_backend} %{QS:varnish_f5_destination}' }
-    }
-    mutate {
-      convert => [ "bytes", "integer" ]
-      add_field => { "signal" => "signal" }
-    }
-    if [bytes] == "-" {
-      mutate {
-        replace => { "bytes" => 0 }
-      }
-    }
-    date {
-      locale => "en"
-      match =>["varnish_timestamp","dd/MMM/yyyy:HH:mm:ss Z"]
-      target => ["@timestamp"]
-      add_tag => [ "tmatch" ]
-    }
-  }
-}
-          </code></pre>
-          <aside class="notes">
-          </aside>
+          <h2>Interesting parts of our configuration</h2>
         </section>
 
         <section>
@@ -263,103 +211,83 @@ filter {
         </section>
 
         <section>
-          <h2>Grok</h2>
-          <p>Grok pattern include:</p>
-          <ul>
-            <li>Integers, Numbers, Words, Spaces</li>
-            <li>IPv4, IPv6, MAC addresses</li>
-            <li>URIs, Pathes (unix and windows)</li>
-            <li>Whole mess of date/timestamp components and formats</li>
-            <li>Common log formats: Syslog, Apache, Ruby, Java</li>
-          </ul>
-          <aside class="notes">
-            No, I haven't tried feeding logstash it's own tail. That is a bit scary.
-          </aside>
-        </section>
-
-        <section>
-          <h2>Filter - Apache</h2>
+          <h2>Filter - Drupal Syslog</h2>
           <pre><code>
-            filter {
-              if [type] == "access" {
-                grok {
-                  match => {
-                    "message" => '%{IPORHOST:first_ip}? %{COMBINEDAPACHELOG}'
-                  }
-                }
-                date {
-                  locale => "en"
-                  match => [ "timestamp" , "dd/MMM/yyyy:HH:mm:ss Z" ]
-                  timezone => "America/Denver"
-                  target => ["@timestamp"]
-                  add_tag => [ "tmatch" ]
-                }
-                mutate {
-                  rename => [ "clientip", "varnish_ip"]
-                  rename => [ "first_ip", "client_ip"]
-                  convert => [ "bytes", "integer" ]
-                }
-                geoip {
-                  source => "client_ip"
-                }
+        filter {
+          if [type] == "drupal_syslog" {
+            grok {
+              match => {
+                "message" =>
+                '%{SYSLOGBASE} %{URI:drupal_base_url}\|%{INT:drupal_unix_timestamp}\|%{DATA:drupal_category}\|%{IP:ip}\|%{URI:drupal_request_url}\|(?:%{URI:drupal_referrer}|)\|%{INT:drupal_uid}\|(?:%{URI:drupal_link}|)\|%{GREEDYDATA:drupal_message}' }
+              }
+              mutate {
+                gsub => [ "drupal_category", "\s", "_"]
+                add_field => { "signal" => "signal" }
               }
             }
-          </code></pre>
+        }
+                      </code></pre>
           <aside class="notes">
           </aside>
         </section>
 
         <section>
-          <h2>Outputs</h2>
+          <h2>Filter - MySQL Slow Queries</h2>
           <pre><code>
-            output {
-              if [type] == 'drupal_syslog' {
-                elasticsearch {
-                  index => "logstash-drupal_syslog-%{+YYYY.MM.dd}"
-                  host => "welastic.colorado.edu"
-                }
-              } else if [mysql] == "mysql" {
-                elasticsearch {
-                  index => "logstash-mysql-%{+YYYY.MM.dd}"
-                  host => "welastic.colorado.edu"
-                }
-              } else if [varnishncsa] == "varnishncsa" {
-                elasticsearch {
-                  index => "logstash-varnishncsa-%{+YYYY.MM.dd}"
-                  host => "welastic.colorado.edu"
-                }
-              } else {
-                elasticsearch {
-                  host => "welastic.colorado.edu"
-                }
-              }
+        input {
+          file {
+            type => "mysql-slow"
+            path => "/var/log/mysql/mysql-slow.log"
+            codec => multiline {
+            pattern => "^# User@Host:"
+            negate => true
+            what => previous
+          }
+          }
+        }
+        filter {
+          if [type] == "mysql" {
+            grok {
+              match => [
+                "message",
+                "^# User@Host: %{USER:user}(?:\[[^\]]+\])?\s+@\s+%{HOST:host}?\s+\[%{IP:ip}?\]"
+              ]
             }
-          </code></pre>
+            grok {
+              match => [
+                "message",
+                "^# Query_time: %{NUMBER:duration:float}\s+Lock_time: %{NUMBER:lock_wait:float} Rows_sent: %{NUMBER:results:int} \s*Rows_examined: %{NUMBER:scanned:int}"
+              ]
+            }
+            grok {
+              match => [
+                "message",
+                "^SET timestamp=%{NUMBER:timestamp};"
+              ]
+            }
+            date {
+              match => [ "timestamp", "UNIX" ]
+            }
+          }
+        }
+                      </code></pre>
           <aside class="notes">
-            These are all outputting to Elasticsearch. But there are a ton of other places to send stuff including:
-            messaging systems, PagerDuty, Nagios, Email. They also have a thing called 'Watcher' that is an alerting
-            plugin for Elasticsearch and will alert based on user defined queries or trends.
-
-            Also looking at [411](https://github.com/etsy/411) from etc to alert based on predefined queries.
+          </aside>
         </section>
       </section>
       <!-- End vertical 3 -->
       <!-- Start vertical 4 -->
       <section>
         <section>
-          <h2>Stories from the Support queue</h2>
-          <blockquote style="text-align:left; padding: 10px 20px"><small>
-              <p>I could use some post-launch support and help for {URL}</p>
-              <p>At times, including right now, the home page displays the words "Information for People" instead of the
-                correct home page. I thought I had made it go away myself just before launch, but clearly not.</p>
-              <p>It may have started when a few weeks ago when I renamed the page that is now "Overview" to "Home."</p>
-              <p>Thanks for your help.<br />Pat</p>
-            </small></blockquote>
+          <h2>What this allows us to do</h2>
+          <p>User reports that a for a few weeks page title is not being set correctly and appears to be changing back
+            after they have
+            corrected it.</p>
           <aside class="notes">
           </aside>
         </section>
         <section>
-          <p>A few weeks? Lets grab 30 days of logs</p>
+          <p>When can start with 30 days of logs</p>
           <img src="assets/kibana_all.png" alt="Kibana dashboard show 163 million events" />
           <p><small>163 million events</small></p>
           <aside class="notes">
@@ -392,7 +320,7 @@ filter {
         </section>
         <section>
           <h2>Answer?</h2>
-          <p class="fragment">User and another person got into an edit war</p>
+          <p class="fragment">Two users have been editing eachothers work</p>
         </section>
         <section>
           <h2>Is this build stable on Test and ready for Production?</h2>
@@ -418,9 +346,7 @@ filter {
       <section>
         <h2>Future for OSR</h2>
         <ul>
-          <li>Adding beats, particularly Metrics</li>
-          <li>Getting more logs</li>
-          <li><a href="https://grafana.com/">Grafana</a> - Trending, analytics, alerting.</li>
+          <li>Assesing features in new versions as we look at new projects</li>
         </ul>
         <aside class="notes">
         </aside>
@@ -429,127 +355,8 @@ filter {
       <section>
         <h2>Questions?</h2>
         <aside class="notes">
-          Post with comparision to other things:
-          https://dev.to/maklipsa/choosing-centralized-logging-and-monitoring-system
         </aside>
       </section>
-
-      <!-- Start vertical 5 -->
-      <section>
-        <section>
-          <h2>Other tools</h2>
-        </section>
-        <section>
-          <ul>
-            <li>Graylog</li>
-            <li>Splunk ($$$)</li>
-            <li>Saas (Loggly, Papertrail)
-          </ul>
-        </section>
-        <section>
-          <h2>Elasticsearch API</h2>
-        </section>
-        <section>
-          <code>curl 'localhost:9200/_cat/health?v'</code>
-          <pre><code class="fragment">
-            epoch      timestamp cluster       status node.total node.data shards pri relo init unassign
-            1394735289 14:28:09  elasticsearch yellow        1         1      5   5    0    0        5
-          </code></pre>
-        </section>
-
-        <section>
-          <code>curl 'localhost:9200/_cat/indices?v'</code>
-          <pre><code class="fragment">
-            health status index    pri rep docs.count docs.deleted store.size pri.store.size
-            green  open   varnish    5   0      11434            0       64mb           32mb
-            green  open   access     5   0       2030            0      5.8mb          5.8mb
-            green  open   mysql      5   0       1054            0      8 8mb           45mb
-            green  open   drupal     5   0      12030            0       1.2G           1.2G
-          </code></pre>
-        </section>
-
-        <section>
-          <h2>Additional Kibana Vizualizations</h2>
-        </section>
-        <section>
-          <img data-src="assets/kibana_default.png" alt="Default screen for Kibana" />
-        </section>
-
-        <section>
-          <img data-src="assets/kibana_viz_co.png" alt="Kibana vizualization creation screen" />
-        </section>
-
-        <section>
-          <img data-src="assets/kibana_viz_map.png" alt="Kibana map vizualization" />
-        </section>
-
-        <section>
-          <img data-src="assets/kibana_dash_plus.png" alt="Kibana Dashboard of 4 indicies" />
-        </section>
-
-        <section>
-          <img data-src="assets/platform_overview.png" alt="Kibana Dashboard of Web Express Overview" />
-        </section>
-
-        <section>
-          <img data-src="assets/platform_overview.png" alt="Kibana Dashboard of Web Express Overview" />
-        </section>
-
-        <section>
-          <h2>Filter - Drupal Syslog</h2>
-          <pre><code>
-filter {
-  if [type] == "drupal_syslog" {
-    grok {
-      match => {
-        "message" =>
-        '%{SYSLOGBASE} %{URI:drupal_base_url}\|%{INT:drupal_unix_timestamp}\|%{DATA:drupal_category}\|%{IP:ip}\|%{URI:drupal_request_url}\|(?:%{URI:drupal_referrer}|)\|%{INT:drupal_uid}\|(?:%{URI:drupal_link}|)\|%{GREEDYDATA:drupal_message}' }
-      }
-      mutate {
-        gsub => [ "drupal_category", "\s", "_"]
-        add_field => { "signal" => "signal" }
-      }
-    }
-}
-              </code></pre>
-          <aside class="notes">
-          </aside>
-        </section>
-
-        <section>
-          <h2>Filter - MySQL Slow Queries</h2>
-          <pre><code>
-filter {
-  if [type] == "mysql" {
-    grok {
-      match => [
-        "message",
-        "^# User@Host: %{USER:user}(?:\[[^\]]+\])?\s+@\s+%{HOST:host}?\s+\[%{IP:ip}?\]"
-      ]
-    }
-    grok {
-      match => [
-        "message",
-        "^# Query_time: %{NUMBER:duration:float}\s+Lock_time: %{NUMBER:lock_wait:float} Rows_sent: %{NUMBER:results:int} \s*Rows_examined: %{NUMBER:scanned:int}"
-      ]
-    }
-    grok {
-      match => [
-        "message",
-        "^SET timestamp=%{NUMBER:timestamp};"
-      ]
-    }
-    date {
-      match => [ "timestamp", "UNIX" ]
-    }
-  }
-}
-              </code></pre>
-          <aside class="notes">
-          </aside>
-        </section>
-      </section>
-      <!-- End vertical 5 -->
     </div>
 
   </div>
