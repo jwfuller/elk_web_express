@@ -44,6 +44,7 @@
         <ul>
           <li>I work on the Web Express team.</li>
           <li>We run a SaaS that currently has ~1400 instances of Drupal (a CMS written in PHP).</li>
+          <li>Runs on-prem using servers from Systems Engineering in OIT.</li>
         </ul>
         <aside class="notes">
 
@@ -75,7 +76,7 @@
             <li class="fragment">Python application</li>
             <li class="fragment">Apache for python application</li>
             <li class="fragment">MongoDB for python application</li>
-            <li class="fragment">Varnish access</li>
+            <li class="fragment">Reverse proxy access</li>
           </ul>
           <aside class="notes">
             Apache logs are times 2 because of SSL. This is 100% sustainable logging. I guarantee we can make more, as
@@ -85,9 +86,10 @@
         <section>
           <h2>They are all over the place</h2>
           <ul>
-            <li>Drupal and Apache logs come from 5 servers</li>
-            <li>Varnish logs from 2 servers</li>
-            <li>Databse logs from 3 servers</li>
+            <li>6 PHP/Apache servers</li>
+            <li>2 Reserve proxy servers</li>
+            <li>3 Database servers</li>
+            <li>Handful of other servers for various orchestration and monitoring tasks</li>
             <li class="fragment">The cluster has ~16 servers</li>
             <li class="fragment">That is just in our Production cluster, we also have DEV and TEST enviroments</li>
             <li class="fragment">As well as logging from 3rd party hosting and the CI service</li>
@@ -109,32 +111,13 @@
             They call it the 'Elastic stack' now, but I still like ELK.
           </aside>
         </section>
-
-        <section>
-          <figure style="float:left; width: 49%">
-            <img data-src="assets/logo-elasticsearch.png" alt="Elasticsearch logo" />
-          </figure>
-          <figure style="float:right; width: 49%">
-            <img data-src="assets/logo-logstash.png" alt="logstash logo" />
-          </figure>
-          <figure style="float:left; width: 49%; clear: both">
-            <img data-src="assets/logo-kibana.png" alt="Kibana logo" />
-          </figure>
-          <figure style="float:right; width: 49%">
-            <img data-src="assets/logo-beats.png" alt="Beats logo" />
-          </figure>
-          <aside class="notes">
-
-          </aside>
-        </section>
-
         <section>
           <h2>Gather</h2>
           <ul>
-            <li>Filebeat</li>
             <li>Syslog and friends (<a
                 href="http://www.rsyslog.com/output-to-elasticsearch-in-logstash-format-kibana-friendly/">rsyslog</a>,
               syslog-ng, etc.)</li>
+            <li>Filebeat</li>
           </ul>
           <aside class="notes">
             <ul>
@@ -155,12 +138,12 @@
             </li>
             <li class="fragment">Filter - break monolithic messages into data
               <ul>
-                <li>Grok, date, geoip, mutate, etc.</li>
+                <li>Grok, date, mutate, etc.</li>
               </ul>
             </li>
             <li class="fragment">Output - what should we do with the events after we chop?
               <ul>
-                <li>Elasticsearch, a ton of messaging protocols, other databases</li>
+                <li>Elasticsearch</li>
               </ul>
             </li>
           </ul>
@@ -178,17 +161,15 @@
 
         <section>
           <h2>Visualization - Kibana</h2>
-          <p>Types include:</p>
-          <ul>
-            <li class="fragment">Bar, line, pie and dounut charts</li>
-            <li class="fragment">Data tables</li>
-            <li class="fragment">Maps</li>
-          </ul>
+          <img src="assets/kibanaVarnish.png"
+            alt="Kibana dashboard showing 36 hours of varnish traffic and handling data" />
           <aside class="notes">
           </aside>
         </section>
         <section>
-          <img src="assets/kibana_dashboard.png" alt="Kibana dashboard" />
+          <img src="assets/kibanaDrupal.png" alt="Kibana dashboard showing 36 hours of Drupal appplication data" />
+          <aside class="notes">
+          </aside>
         </section>
       </section>
       <!-- End vertical 2 -->
@@ -213,19 +194,10 @@
         <section>
           <h2>Filter - Drupal Syslog</h2>
           <pre><code>
-        filter {
-          if [type] == "drupal_syslog" {
-            grok {
-              match => {
-                "message" =>
-                '%{SYSLOGBASE} %{URI:drupal_base_url}\|%{INT:drupal_unix_timestamp}\|%{DATA:drupal_category}\|%{IP:ip}\|%{URI:drupal_request_url}\|(?:%{URI:drupal_referrer}|)\|%{INT:drupal_uid}\|(?:%{URI:drupal_link}|)\|%{GREEDYDATA:drupal_message}' }
-              }
-              mutate {
-                gsub => [ "drupal_category", "\s", "_"]
-                add_field => { "signal" => "signal" }
-              }
-            }
-        }
+%{SYSLOGBASE} %{URI:drupal_base_url}\|%{INT:drupal_unix_timestamp}\|
+%{DATA:drupal_category}\|%{IP:ip}\|%{URI:drupal_request_url}\|
+(?:%{URI:drupal_referrer}|)\|%{INT:drupal_uid}\|(?:%{URI:drupal_link}|)\|
+%{GREEDYDATA:drupal_message}
                       </code></pre>
           <aside class="notes">
           </aside>
@@ -319,10 +291,6 @@
           </aside>
         </section>
         <section>
-          <h2>Answer?</h2>
-          <p class="fragment">Two users have been editing eachothers work</p>
-        </section>
-        <section>
           <h2>Is this build stable on Test and ready for Production?</h2>
           <aside class="notes">
           </aside>
@@ -334,21 +302,20 @@
         </section>
         <section>
           <img src="assets/kibana_time_zoom.gif" alt="Kibana dashboard selecting a specific time range" />
-          </aside>
         </section>
-        <section>
-          <h2>Answer?</h2>
-          <p class="fragment">Nope, increase in 'signal' logging</p>
-        </section>
+        <aside class="notes">
+        </aside>
       </section>
       <!-- End vertical 4 -->
 
       <section>
         <h2>Future for OSR</h2>
         <ul>
-          <li>Assesing features in new versions as we look at new projects</li>
+          <li class="fragment">Upgrade, maybe?</li>
+          <li class="fragment">Looking at current versions for new projects</li>
         </ul>
         <aside class="notes">
+          Upgrading takes time and we don't have any major issues
         </aside>
       </section>
 
